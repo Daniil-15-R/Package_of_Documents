@@ -2,6 +2,12 @@ package com.package_of_documents.byrogozin
 
 import android.R
 import android.content.Context
+import android.net.Uri
+import android.os.Environment
+import android.webkit.MimeTypeMap
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -25,6 +31,12 @@ import androidx.navigation.NavController
 import androidx.navigation.compose.rememberNavController
 import com.package_of_documents.byrogozin.ui.theme.Package_of_DocumentsbyRogozinTheme
 import kotlinx.coroutines.delay
+import java.io.BufferedReader
+import java.io.File
+import java.io.FileOutputStream
+import java.io.InputStreamReader
+import java.text.SimpleDateFormat
+import java.util.*
 
 object AgreementData {
     var contractNumber: String = ""
@@ -36,8 +48,15 @@ object AgreementData {
     var selectedAdvanceOption: String = "100%"
     var customerFIO: String = ""
     var executorFIO: String = ""
-    var userId:Long = -1L
+    var userId: Long = -1L
 }
+
+// Data class to store uploaded file information for each section
+data class SectionFile(
+    val sectionId: String,
+    var filePath: String? = null,
+    var fileContent: String? = null
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -61,6 +80,7 @@ fun Agreement(navController: NavController, customerType: String) {
     var executor by remember { mutableStateOf(AgreementData.executor) }
     var customerFIO by remember { mutableStateOf(AgreementData.customerFIO) }
     var executorFIO by remember { mutableStateOf(AgreementData.executorFIO) }
+    var showConfirmationDialog by remember { mutableStateOf(false) }
 
     // State for editable executor header
     var director by remember { mutableStateOf(AccountData.director) }
@@ -68,6 +88,232 @@ fun Agreement(navController: NavController, customerType: String) {
 
     var contractNumber by remember { mutableStateOf(AgreementData.contractNumber) }
 
+    // State for uploaded files for each section
+    val sectionFiles = remember {
+        mutableStateMapOf(
+            "section1" to SectionFile("section1"), // Предмет договора
+            "section2" to SectionFile("section2"), // Обязанности сторон
+            "section3" to SectionFile("section3"), // Порядок оказания услуг
+            "section5" to SectionFile("section5"), // Сроки выполнения
+            "section6" to SectionFile("section6"), // Ответственность сторон
+            "section7" to SectionFile("section7"), // Порядок разрешения споров
+            "section8" to SectionFile("section8"), // Форс-мажор
+            "section9" to SectionFile("section9"), // Изменение и расторжение договора
+            "section10" to SectionFile("section10") // Другие условия
+        )
+    }
+
+    // Переменная для хранения текущей секции, для которой выбирается файл
+    var currentSectionForUpload by remember { mutableStateOf<String?>(null) }
+
+    // Функция для получения расширения файла
+    fun getFileExtension(uri: Uri, context: Context): String {
+        val contentResolver = context.contentResolver
+        val mimeType = contentResolver.getType(uri)
+        return MimeTypeMap.getSingleton().getExtensionFromMimeType(mimeType)?.let { ".$it" } ?: ""
+    }
+
+    // Функция для проверки, является ли текст "разумным"
+    fun isReasonableText(text: String): Boolean {
+        if (text.isEmpty()) return false
+
+        val reasonableCharCount = text.count { char ->
+            char in '\u0020'..'\u007E' || // Basic Latin
+                    char in '\u0400'..'\u04FF' || // Cyrillic
+                    char in '\u0500'..'\u052F' || // Cyrillic Supplement
+                    char == '\n' || char == '\r' || char == '\t'
+        }
+
+        return reasonableCharCount.toDouble() / text.length > 0.8
+    }
+
+    // Функция для чтения текстовых файлов с определением кодировки
+    fun readTextFileWithEncodingDetection(
+        uri: Uri,
+        context: Context,
+        onSuccess: (String) -> Unit,
+        onError: (Exception) -> Unit
+    ) {
+        try {
+            context.contentResolver.openInputStream(uri)?.use { inputStream ->
+                val encodings = listOf("UTF-8", "Windows-1251", "KOI8-R", "ISO-8859-1")
+                var content: String? = null
+                var successfulEncoding: String? = null
+
+                for (encoding in encodings) {
+                    try {
+                        val newInputStream = context.contentResolver.openInputStream(uri)
+                        newInputStream?.use { stream ->
+                            val reader = BufferedReader(InputStreamReader(stream, encoding))
+                            val stringContent = StringBuilder()
+                            var line: String?
+                            do {
+                                line = reader.readLine()
+                                if (line != null) {
+                                    stringContent.append(line).append("\n")
+                                }
+                            } while (line != null)
+
+                            if (isReasonableText(stringContent.toString())) {
+                                content = stringContent.toString()
+                                successfulEncoding = encoding
+                                //break
+                            }
+                        }
+                    } catch (e: Exception) {
+                        continue
+                    }
+                }
+
+                if (content != null) {
+                    println("Файл прочитан с кодировкой: $successfulEncoding")
+                    onSuccess(content!!)
+                } else {
+                    onError(Exception("Не удалось определить кодировку файла"))
+                }
+            } ?: onError(Exception("Не удалось открыть файл"))
+        } catch (e: Exception) {
+            onError(e)
+        }
+    }
+
+    // Функция для чтения DOCX файлов
+    fun readDocxFile(
+        uri: Uri,
+        context: Context,
+        onSuccess: (String) -> Unit,
+        onError: (Exception) -> Unit
+    ) {
+        try {
+            context.contentResolver.openInputStream(uri)?.use { inputStream ->
+                val document = org.apache.poi.xwpf.usermodel.XWPFDocument(inputStream)
+                val content = StringBuilder()
+
+                // Чтение параграфов
+                document.paragraphs.forEach { paragraph ->
+                    val text = paragraph.text
+                    if (text.isNotBlank()) {
+                        content.append(text).append("\n")
+                    }
+                }
+
+                // Чтение таблиц
+                document.tables.forEach { table ->
+                    table.rows.forEach { row ->
+                        row.tableCells.forEach { cell ->
+                            val cellText = cell.text.trim()
+                            if (cellText.isNotBlank()) {
+                                content.append(cellText).append("\t")
+                            }
+                        }
+                        content.append("\n")
+                    }
+                    content.append("\n")
+                }
+
+                document.close()
+
+                if (content.isNotEmpty()) {
+                    onSuccess(content.toString())
+                } else {
+                    onError(Exception("DOCX файл пуст или не содержит читаемого текста"))
+                }
+            } ?: onError(Exception("Не удалось открыть DOCX файл"))
+        } catch (e: Exception) {
+            onError(e)
+        }
+    }
+
+    // Функция для чтения DOC файлов
+    fun readDocFile(
+        uri: Uri,
+        context: Context,
+        onSuccess: (String) -> Unit,
+        onError: (Exception) -> Unit
+    ) {
+        try {
+            onSuccess("[Файл формата .doc - содержимое не может быть отображено. Файл сохранен.]")
+        } catch (e: Exception) {
+            onError(e)
+        }
+    }
+
+    // Универсальная функция для чтения файлов
+    fun readFileContent(uri: Uri, context: Context, onSuccess: (String) -> Unit, onError: (Exception) -> Unit) {
+        try {
+            val extension = getFileExtension(uri, context).lowercase()
+
+            when {
+                extension == ".docx" -> readDocxFile(uri, context, onSuccess, onError)
+                extension == ".doc" -> readDocFile(uri, context, onSuccess, onError)
+                extension in listOf(".txt", ".rtf", ".pdf") -> readTextFileWithEncodingDetection(uri, context, onSuccess, onError)
+                else -> readTextFileWithEncodingDetection(uri, context, onSuccess, onError)
+            }
+        } catch (e: Exception) {
+            onError(e)
+        }
+    }
+
+    // Функция для сохранения файла и обновления секции
+    fun saveFileAndUpdateSection(uri: Uri, sectionId: String, context: Context) {
+        try {
+            val docsDir = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS) ?: context.filesDir
+            if (!docsDir.exists()) {
+                docsDir.mkdirs()
+            }
+
+            val fileName = "Договор_${sectionId}_${SimpleDateFormat("yyyyMMdd_HHmmss").format(Date())}_attached${getFileExtension(uri, context)}"
+            val file = File(docsDir, fileName)
+
+            context.contentResolver.openInputStream(uri)?.use { inputStream ->
+                FileOutputStream(file).use { output ->
+                    inputStream.copyTo(output)
+                }
+            }
+
+            sectionFiles[sectionId] = sectionFiles[sectionId]?.copy(filePath = file.absolutePath) ?: SectionFile(sectionId, file.absolutePath)
+
+            Toast.makeText(context, "Файл загружен для секции $sectionId", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            e.printStackTrace()
+            Toast.makeText(context, "Ошибка сохранения файла", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // File picker launcher
+    val filePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        uri?.let { selectedUri ->
+            currentSectionForUpload?.let { sectionId ->
+                readFileContent(
+                    uri = selectedUri,
+                    context = context,
+                    onSuccess = { content ->
+                        sectionFiles[sectionId] = sectionFiles[sectionId]?.copy(fileContent = content) ?: SectionFile(sectionId, fileContent = content)
+                        saveFileAndUpdateSection(selectedUri, sectionId, context)
+                        Toast.makeText(context, "Файл успешно загружен и прочитан для секции $sectionId", Toast.LENGTH_SHORT).show()
+                    },
+                    onError = { error ->
+                        // Если не удалось прочитать содержимое, все равно сохраняем файл
+                        sectionFiles[sectionId] = sectionFiles[sectionId]?.copy(fileContent = "[Не удалось прочитать содержимое файла: ${error.message}]")
+                            ?: SectionFile(sectionId, fileContent = "[Не удалось прочитать содержимое файла: ${error.message}]")
+                        saveFileAndUpdateSection(selectedUri, sectionId, context)
+                        Toast.makeText(context, "Файл сохранен, но содержимое не прочитано", Toast.LENGTH_SHORT).show()
+                    }
+                )
+            }
+            currentSectionForUpload = null
+        }
+    }
+
+    // Функция для обработки загрузки файла для конкретной секции
+    fun handleFileUpload(sectionId: String) {
+        currentSectionForUpload = sectionId
+        filePickerLauncher.launch("*/*")
+    }
+
+    // Остальной код без изменений...
     // Customer details based on customerType
     val customerDetails = remember(customerType) {
         when (customerType) {
@@ -478,19 +724,26 @@ fun Agreement(navController: NavController, customerType: String) {
                 }
             }
 
-            // Остальные секции договора...
+            // Остальные секции договора с функционалом загрузки файлов
             ContractSectionWithUpload(
                 title = "1. Предмет договора",
-                onUploadClick = { /* Handle file upload */ }
+                sectionId = "section1",
+                sectionFiles = sectionFiles,
+                onUploadClick = { handleFileUpload("section1") }
             )
 
             ContractSectionWithUpload(
                 title = "2. Обязанности сторон",
-                onUploadClick = { /* Handle file upload */ }
+                sectionId = "section2",
+                sectionFiles = sectionFiles,
+                onUploadClick = { handleFileUpload("section2") }
             )
+
             ContractSectionWithUpload(
                 title = "3. Порядок оказания услуг",
-                onUploadClick = { /* Handle file upload */ }
+                sectionId = "section3",
+                sectionFiles = sectionFiles,
+                onUploadClick = { handleFileUpload("section3") }
             )
 
             // Price section
@@ -593,27 +846,44 @@ fun Agreement(navController: NavController, customerType: String) {
             // Remaining sections with file upload buttons
             ContractSectionWithUpload(
                 title = "5. Сроки выполнения",
-                onUploadClick = { /* Handle file upload */ }
+                sectionId = "section5",
+                sectionFiles = sectionFiles,
+                onUploadClick = { handleFileUpload("section5") }
             )
+
             ContractSectionWithUpload(
                 title = "6. Ответственность сторон",
-                onUploadClick = { /* Handle file upload */ }
+                sectionId = "section6",
+                sectionFiles = sectionFiles,
+                onUploadClick = { handleFileUpload("section6") }
             )
+
             ContractSectionWithUpload(
                 title = "7. Порядок разрешения споров",
-                onUploadClick = { /* Handle file upload */ }
+                sectionId = "section7",
+                sectionFiles = sectionFiles,
+                onUploadClick = { handleFileUpload("section7") }
             )
+
             ContractSectionWithUpload(
                 title = "8. Форс-мажор",
-                onUploadClick = { /* Handle file upload */ }
+                sectionId = "section8",
+                sectionFiles = sectionFiles,
+                onUploadClick = { handleFileUpload("section8") }
             )
+
             ContractSectionWithUpload(
                 title = "9. Изменение и расторжение договора",
-                onUploadClick = { /* Handle file upload */ }
+                sectionId = "section9",
+                sectionFiles = sectionFiles,
+                onUploadClick = { handleFileUpload("section9") }
             )
+
             ContractSectionWithUpload(
                 title = "10. Другие условия",
-                onUploadClick = { /* Handle file upload */ }
+                sectionId = "section10",
+                sectionFiles = sectionFiles,
+                onUploadClick = { handleFileUpload("section10") }
             )
 
             // Parties details section
@@ -800,13 +1070,46 @@ fun Agreement(navController: NavController, customerType: String) {
                     onClick = {
                         saveContractToDatabase()
                         showSuccessMessage = true
-                        navController.navigate("acts/$customerType?contractNumber=${AgreementData.contractNumber}&date=${AgreementData.date}")
+                        showConfirmationDialog = true
                     },
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(48.dp)
                 ) {
                     Text("Перейти к созданию акта", color = textColor)
+                }
+
+                if (showConfirmationDialog) {
+                    AlertDialog(
+                        onDismissRequest = { showConfirmationDialog = false },
+                        title = { Text("Подтверждение") },
+                        text = { Text("Вы уже готовы закрыть документ?") },
+                        confirmButton = {
+                            Button(
+                                onClick = {
+                                    showConfirmationDialog = false
+                                    navController.navigate("acts/$customerType?contractNumber=${AgreementData.contractNumber}&date=${AgreementData.date}")
+                                },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = borderColor,
+                                    contentColor = Color.White
+                                )
+                            ) {
+                                Text("Да")
+                            }
+                        },
+                        dismissButton = {
+                            Button(
+                                onClick = { showConfirmationDialog = false },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color.LightGray,
+                                    contentColor = Color.Black
+                                )
+                            ) {
+                                Text("Нет")
+                            }
+                        }
+                    )
                 }
 
                 Spacer(modifier = Modifier.height(8.dp))
@@ -823,13 +1126,39 @@ fun Agreement(navController: NavController, customerType: String) {
                 ) {
                     Text("Перейти к приложению", color = textColor)
                 }
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Новая кнопка для перехода к Доп. Соглашению
+                Button(
+                    onClick = {
+                        saveContractToDatabase()
+                        showSuccessMessage = true
+                        navController.navigate("addagr/$customerType/${AgreementData.contractNumber}/${AgreementData.date}")
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                ) {
+                    Text("Перейти к Доп. Соглашению", color = textColor)
+                }
             }
         }
     }
 }
 
 @Composable
-fun ContractSectionWithUpload(title: String, onUploadClick: () -> Unit) {
+fun ContractSectionWithUpload(
+    title: String,
+    sectionId: String,
+    sectionFiles: Map<String, SectionFile>,
+    onUploadClick: () -> Unit
+) {
+    val sectionFile = sectionFiles[sectionId]
+    val hasFile = sectionFile?.filePath != null
+    val fileContent = sectionFile?.fileContent
+    val textColor = Color(0xFF6A1D24)
+    val fieldColor = Color.White
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -843,7 +1172,7 @@ fun ContractSectionWithUpload(title: String, onUploadClick: () -> Unit) {
             Text(
                 title,
                 style = MaterialTheme.typography.bodyLarge,
-                color = Color(0xFF6A1D24)
+                color = textColor
             )
 
             Button(
@@ -865,14 +1194,42 @@ fun ContractSectionWithUpload(title: String, onUploadClick: () -> Unit) {
             modifier = Modifier
                 .fillMaxWidth()
                 .height(100.dp)
-                .border(1.dp, Color.Gray)
-                .padding(8.dp)
+                .background(fieldColor)
+                .border(1.dp, textColor)
+                .clickable(onClick = onUploadClick),
+            contentAlignment = Alignment.Center
         ) {
-            Text(
-                "Файл не загружен",
-                modifier = Modifier.align(Alignment.Center),
-                color = Color.Gray
-            )
+            if (hasFile) {
+                Text(
+                    "Файл загружен\n${File(sectionFile.filePath!!).name}",
+                    color = textColor,
+                    textAlign = TextAlign.Center
+                )
+            } else {
+                Text(
+                    "Нажмите для прикрепления файла",
+                    color = textColor
+                )
+            }
+        }
+
+        // Display file content if available
+        if (fileContent != null) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(200.dp)
+                    .background(Color.White)
+                    .border(1.dp, Color.Gray)
+                    .verticalScroll(rememberScrollState()),
+                contentAlignment = Alignment.TopStart
+            ) {
+                Text(
+                    text = fileContent,
+                    color = Color.Black,
+                    modifier = Modifier.padding(8.dp)
+                )
+            }
         }
     }
 }
