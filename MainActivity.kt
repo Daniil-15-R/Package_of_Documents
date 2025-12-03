@@ -205,9 +205,7 @@ fun AppNavigation(isLoggedIn: Boolean) {
             LoginScreen(navController) { token ->
                 // Сохраняем статус авторизации при успешном входе
                 (navController.context as MainActivity).saveAuthStatus(token)
-                navController.navigate("home") {
-                    popUpTo("login") { inclusive = true }
-                }
+                // Навигация будет обрабатываться внутри LoginScreen в зависимости от наличия реквизитов
             }
         }
         composable("home") {
