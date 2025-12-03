@@ -25,11 +25,9 @@ import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
 import androidx.navigation.compose.rememberNavController
 import com.package_of_documents.byrogozin.ui.theme.Package_of_DocumentsbyRogozinTheme
-import com.package_of_documents.byrogozin.AccountData1
-import com.package_of_documents.byrogozin.AccountData2
-import org.apache.poi.xwpf.usermodel.XWPFDocument
-import org.apache.poi.xwpf.usermodel.XWPFParagraph
-import org.apache.poi.xwpf.usermodel.ParagraphAlignment
+import java.nio.charset.Charset
+import org.apache.poi.xwpf.usermodel.XWPFTable
+import org.apache.poi.xwpf.usermodel.XWPFTableRow
 import java.io.File
 import java.io.FileOutputStream
 import java.text.SimpleDateFormat
@@ -38,6 +36,7 @@ import android.os.Parcelable
 import kotlinx.parcelize.Parcelize
 import android.content.Context
 import android.webkit.MimeTypeMap
+import org.apache.poi.xwpf.usermodel.XWPFDocument
 import java.io.BufferedReader
 import java.io.InputStreamReader
 
@@ -46,7 +45,7 @@ data class ApplicationForm(
     val id: Int,
     var contractNumber: String = "",
     var contractDate: String = "",
-    var attachedFilePath: String? = null // Теперь храним только путь к прикрепленному файлу
+    var attachedFilePath: String? = null
 ) : Parcelable
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -60,8 +59,8 @@ fun Application(
     val textColor = Color(0xFF6A1D24)
     val fieldColor = Color.White
     val context = LocalContext.current
+    var showConfirmationDialog by remember { mutableStateOf(false) }
 
-    // Keep only this single declaration of customerType
     val customerType = when {
         AccountData1.organizationName.isNotEmpty() -> "juridical"
         AccountData2.fioText.isNotEmpty() -> "physical"
@@ -83,45 +82,207 @@ fun Application(
 
     var fileContent by remember { mutableStateOf<String?>(null) }
 
+    // Функция для получения расширения файла
+    fun getFileExtension(uri: Uri, context: Context): String {
+        val contentResolver = context.contentResolver
+        val mimeType = contentResolver.getType(uri)
+        return MimeTypeMap.getSingleton().getExtensionFromMimeType(mimeType)?.let { ".$it" } ?: ""
+    }
+
+    // Функция для проверки, является ли текст "разумным"
+    fun isReasonableText(text: String): Boolean {
+        if (text.isEmpty()) return false
+
+        val reasonableCharCount = text.count { char ->
+            char in '\u0020'..'\u007E' || // Basic Latin
+                    char in '\u0400'..'\u04FF' || // Cyrillic
+                    char in '\u0500'..'\u052F' || // Cyrillic Supplement
+                    char == '\n' || char == '\r' || char == '\t'
+        }
+
+        return reasonableCharCount.toDouble() / text.length > 0.8
+    }
+
+    // Функция для чтения текстовых файлов с определением кодировки
+    fun readTextFileWithEncodingDetection(
+        uri: Uri,
+        context: Context,
+        onSuccess: (String) -> Unit,
+        onError: (Exception) -> Unit
+    ) {
+        try {
+            context.contentResolver.openInputStream(uri)?.use { inputStream ->
+                val encodings = listOf("UTF-8", "Windows-1251", "KOI8-R", "ISO-8859-1")
+                var content: String? = null
+                var successfulEncoding: String? = null
+
+                for (encoding in encodings) {
+                    try {
+                        val newInputStream = context.contentResolver.openInputStream(uri)
+                        newInputStream?.use { stream ->
+                            val reader = BufferedReader(InputStreamReader(stream, encoding))
+                            val stringContent = StringBuilder()
+                            var line: String?
+                            do {
+                                line = reader.readLine()
+                                if (line != null) {
+                                    stringContent.append(line).append("\n")
+                                }
+                            } while (line != null)
+
+                            if (isReasonableText(stringContent.toString())) {
+                                content = stringContent.toString()
+                                successfulEncoding = encoding
+                                //break
+                            }
+                        }
+                    } catch (e: Exception) {
+                        continue
+                    }
+                }
+
+                if (content != null) {
+                    println("Файл прочитан с кодировкой: $successfulEncoding")
+                    onSuccess(content!!)
+                } else {
+                    onError(Exception("Не удалось определить кодировку файла"))
+                }
+            } ?: onError(Exception("Не удалось открыть файл"))
+        } catch (e: Exception) {
+            onError(e)
+        }
+    }
+
+    // Функция для чтения DOCX файлов
+    fun readDocxFile(
+        uri: Uri,
+        context: Context,
+        onSuccess: (String) -> Unit,
+        onError: (Exception) -> Unit
+    ) {
+        try {
+            context.contentResolver.openInputStream(uri)?.use { inputStream ->
+                val document = XWPFDocument(inputStream)
+                val content = StringBuilder()
+
+                // Чтение параграфов
+                document.paragraphs.forEach { paragraph ->
+                    val text = paragraph.text
+                    if (text.isNotBlank()) {
+                        content.append(text).append("\n")
+                    }
+                }
+
+                // Чтение таблиц
+                document.tables.forEach { table ->
+                    table.rows.forEach { row ->
+                        row.tableCells.forEach { cell ->
+                            val cellText = cell.text.trim()
+                            if (cellText.isNotBlank()) {
+                                content.append(cellText).append("\t")
+                            }
+                        }
+                        content.append("\n")
+                    }
+                    content.append("\n")
+                }
+
+                document.close()
+
+                if (content.isNotEmpty()) {
+                    onSuccess(content.toString())
+                } else {
+                    onError(Exception("DOCX файл пуст или не содержит читаемого текста"))
+                }
+            } ?: onError(Exception("Не удалось открыть DOCX файл"))
+        } catch (e: Exception) {
+            onError(e)
+        }
+    }
+
+    // Функция для чтения DOC файлов
+    fun readDocFile(
+        uri: Uri,
+        context: Context,
+        onSuccess: (String) -> Unit,
+        onError: (Exception) -> Unit
+    ) {
+        try {
+            onSuccess("[Файл формата .doc - содержимое не может быть отображено. Файл сохранен.]")
+        } catch (e: Exception) {
+            onError(e)
+        }
+    }
+
+    // Универсальная функция для чтения файлов
+    fun readFileContent(uri: Uri, context: Context, onSuccess: (String) -> Unit, onError: (Exception) -> Unit) {
+        try {
+            val extension = getFileExtension(uri, context).lowercase()
+
+            when {
+                extension == ".docx" -> readDocxFile(uri, context, onSuccess, onError)
+                extension == ".doc" -> readDocFile(uri, context, onSuccess, onError)
+                extension in listOf(".txt", ".rtf", ".pdf") -> readTextFileWithEncodingDetection(uri, context, onSuccess, onError)
+                else -> readTextFileWithEncodingDetection(uri, context, onSuccess, onError)
+            }
+        } catch (e: Exception) {
+            onError(e)
+        }
+    }
+
+    // Функция для сохранения файла и обновления формы
+    fun saveFileAndUpdateForm(uri: Uri, form: ApplicationForm, context: Context) {
+        try {
+            val docsDir = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS) ?: context.filesDir
+            if (!docsDir.exists()) {
+                docsDir.mkdirs()
+            }
+
+            val fileName = "Приложение_${form.id}_${SimpleDateFormat("yyyyMMdd_HHmmss").format(Date())}_attached${getFileExtension(uri, context)}"
+            val file = File(docsDir, fileName)
+
+            context.contentResolver.openInputStream(uri)?.use { inputStream ->
+                FileOutputStream(file).use { output ->
+                    inputStream.copyTo(output)
+                }
+            }
+
+            forms = forms.map {
+                if (it.id == form.id) it.copy(attachedFilePath = file.absolutePath) else it
+            }
+
+            Toast.makeText(context, "Файл загружен", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            e.printStackTrace()
+            Toast.makeText(context, "Ошибка сохранения файла", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
         uri?.let { selectedUri ->
             val currentForm = forms.lastOrNull() ?: return@let
 
-            try {
-                // Чтение содержимого файла как текста
-                context.contentResolver.openInputStream(selectedUri)?.use { inputStream ->
-                    val reader = BufferedReader(InputStreamReader(inputStream))
-                    val content = reader.readText()
+            readFileContent(
+                uri = selectedUri,
+                context = context,
+                onSuccess = { content ->
                     fileContent = content
-
-                    // Сохраняем файл как обычно
-                    val docsDir = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS) ?: context.filesDir
-                    if (!docsDir.exists()) {
-                        docsDir.mkdirs()
-                    }
-
-                    val fileName = "Приложение_${currentForm.id}_${SimpleDateFormat("yyyyMMdd_HHmmss").format(Date())}_attached${getFileExtension(selectedUri, context)}"
-                    val file = File(docsDir, fileName)
-
-                    FileOutputStream(file).use { output ->
-                        inputStream.copyTo(output)
-                    }
-
-                    forms = forms.map {
-                        if (it.id == currentForm.id) it.copy(attachedFilePath = file.absolutePath) else it
-                    }
-
-                    Toast.makeText(context, "Файл загружен и прочитан", Toast.LENGTH_SHORT).show()
+                    saveFileAndUpdateForm(selectedUri, currentForm, context)
+                    Toast.makeText(context, "Файл успешно загружен и прочитан", Toast.LENGTH_SHORT).show()
+                },
+                onError = { error ->
+                    // Если не удалось прочитать содержимое, все равно сохраняем файл
+                    fileContent = "[Не удалось прочитать содержимое файла: ${error.message}]"
+                    saveFileAndUpdateForm(selectedUri, currentForm, context)
+                    Toast.makeText(context, "Файл сохранен, но содержимое не прочитано", Toast.LENGTH_SHORT).show()
                 }
-            } catch (e: Exception) {
-                e.printStackTrace()
-                Toast.makeText(context, "Ошибка чтения файла", Toast.LENGTH_SHORT).show()
-            }
+            )
         }
     }
 
+    // Остальной код без изменений...
     LaunchedEffect(contractNumber) {
         if (contractNumber != null && forms.firstOrNull()?.contractNumber.isNullOrEmpty()) {
             forms = listOf(
@@ -141,7 +302,6 @@ fun Application(
             contractDate = AgreementData.date
         )
     }
-
 
     fun handleFileAttach(form: ApplicationForm) {
         filePickerLauncher.launch("*/*")
@@ -197,7 +357,7 @@ fun Application(
     fun saveAllApplications(): Boolean {
         return try {
             forms.forEach { form ->
-                saveApplicationToDatabase(form, 0) // Убрана проверка на false
+                saveApplicationToDatabase(form, 0)
             }
 
             AgreementData.serviceName = forms.joinToString { "Приложение №${it.id}" }
@@ -319,7 +479,7 @@ fun Application(
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(100.dp) // Уменьшили высоту для кнопки прикрепления
+                                .height(100.dp)
                                 .background(fieldColor)
                                 .border(1.dp, textColor)
                                 .clickable { handleFileAttach(form) },
@@ -339,12 +499,12 @@ fun Application(
                             }
                         }
 
-                        // Добавьте новый блок для отображения содержимого файла
+                        // Блок для отображения содержимого файла
                         if (fileContent != null) {
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(200.dp) // Высота для отображения текста
+                                    .height(200.dp)
                                     .background(fieldColor)
                                     .border(1.dp, textColor)
                                     .verticalScroll(rememberScrollState()),
@@ -367,12 +527,9 @@ fun Application(
             ) {
                 Button(
                     onClick = {
-                        saveAllApplications()
-                        navController.currentBackStackEntry?.savedStateHandle?.set(
-                            "applications",
-                            forms
-                        )
-                        navController.navigate("acts/$customerType")
+                        if (saveAllApplications()) {
+                            showConfirmationDialog = true
+                        }
                     },
                     modifier = Modifier
                         .fillMaxWidth()
@@ -384,6 +541,43 @@ fun Application(
                     )
                 ) {
                     Text("Перейти к акту", color = textColor)
+                }
+
+                if (showConfirmationDialog) {
+                    AlertDialog(
+                        onDismissRequest = { showConfirmationDialog = false },
+                        title = { Text("Подтверждение") },
+                        text = { Text("Вы уже готовы закрыть документ?") },
+                        confirmButton = {
+                            Button(
+                                onClick = {
+                                    showConfirmationDialog = false
+                                    navController.currentBackStackEntry?.savedStateHandle?.set(
+                                        "applications",
+                                        forms
+                                    )
+                                    navController.navigate("acts/$customerType")
+                                },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = borderColor,
+                                    contentColor = Color.White
+                                )
+                            ) {
+                                Text("Да")
+                            }
+                        },
+                        dismissButton = {
+                            Button(
+                                onClick = { showConfirmationDialog = false },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color.LightGray,
+                                    contentColor = Color.Black
+                                )
+                            ) {
+                                Text("Нет")
+                            }
+                        }
+                    )
                 }
 
                 Button(
@@ -430,23 +624,5 @@ fun Application(
                 }
             }
         }
-    }
-}
-
-// Функция для получения расширения файла
-fun getFileExtension(uri: Uri, context: Context): String {
-    val contentResolver = context.contentResolver
-    val mimeType = contentResolver.getType(uri)
-    return MimeTypeMap.getSingleton().getExtensionFromMimeType(mimeType)?.let { ".$it" } ?: ""
-}
-
-@Preview(showBackground = true)
-@Composable
-fun ApplicationPreview() {
-    Package_of_DocumentsbyRogozinTheme {
-        Application(
-            navController = rememberNavController(),
-            //contractNumber = "123"
-        )
     }
 }
