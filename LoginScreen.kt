@@ -42,6 +42,32 @@ fun LoginScreen(
     var isLoading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
+    // Функция для проверки наличия реквизитов пользователя
+    fun checkUserHasDetails(userId: Long): Boolean {
+        val dbHelper = DatabaseHelper(context)
+        val cursor = dbHelper.getContractorDetails(userId)
+        val hasDetails = cursor.count > 0
+        cursor.close()
+        return hasDetails
+    }
+
+    fun getUserId(username: String): Long? {
+        val dbHelper = DatabaseHelper(context)
+        val db = dbHelper.readableDatabase
+        val query = """
+    SELECT ${DatabaseHelper.COLUMN_USER_ID} 
+    FROM ${DatabaseHelper.TABLE_USERS} 
+    WHERE ${DatabaseHelper.COLUMN_USERNAME} = ?
+""".trimIndent()
+
+        val cursor = db.rawQuery(query, arrayOf(username))
+        return if (cursor.moveToFirst()) {
+            cursor.getLong(cursor.getColumnIndexOrThrow(DatabaseHelper.COLUMN_USER_ID))
+        } else {
+            null
+        }.also { cursor.close() }
+    }
+
     // Функция для обработки авторизации
     fun handleLogin() {
         val currentLogin = login.trim()
@@ -101,8 +127,28 @@ fun LoginScreen(
                 withContext(Dispatchers.Main) {
                     val role = dbHelper.getUserRole(currentLogin)
                     onLoginSuccess(role)
-                    navController.navigate("person") {
-                        popUpTo("login") { inclusive = true }
+
+                    // Получаем ID пользователя и проверяем наличие реквизитов
+                    val userId = getUserId(currentLogin)
+                    if (userId != null) {
+                        val hasDetails = checkUserHasDetails(userId)
+
+                        if (hasDetails) {
+                            // Если реквизиты есть - переходим на HomeScreen
+                            navController.navigate("home") {
+                                popUpTo("login") { inclusive = true }
+                            }
+                        } else {
+                            // Если реквизитов нет - переходим на PersonalAccountScreen
+                            navController.navigate("person") {
+                                popUpTo("login") { inclusive = true }
+                            }
+                        }
+                    } else {
+                        // Если не удалось получить ID пользователя - переходим на PersonalAccountScreen
+                        navController.navigate("person") {
+                            popUpTo("login") { inclusive = true }
+                        }
                     }
                 }
             } catch (e: Exception) {
@@ -184,7 +230,6 @@ fun LoginScreen(
     }
 }
 
-// Функция для хэширования пароля (SHA-256)
 private fun hashPassword(password: String): String {
     return try {
         val digest = MessageDigest.getInstance("SHA-256")
