@@ -194,7 +194,9 @@ fun PersonalAccountScreen(navController: NavController) {
             AccountData.addressesMatch = addressesMatch
 
             delay(5000)
-            navController.popBackStack()
+            navController.navigate("home") {
+                popUpTo("personal_account_screen_route") { inclusive = true }
+            }
         }
     }
 
@@ -603,7 +605,6 @@ fun PersonalAccountScreen(navController: NavController) {
 
             Spacer(modifier = Modifier.height(24.dp))
 
-            // Измененные кнопки действий в PersonalAccountScreen.kt
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceEvenly
@@ -634,57 +635,78 @@ fun PersonalAccountScreen(navController: NavController) {
                         val dbHelper = DatabaseHelper(context)
                         val userId = 1L // Здесь нужно получить реальный ID пользователя из сессии/авторизации
 
-                        // Проверяем, есть ли уже запись для этого пользователя
-                        val cursor = dbHelper.getContractorDetails(userId)
-                        if (cursor.moveToFirst()) {
-                            // Обновляем существующую запись
-                            dbHelper.updateContractorDetails(
-                                contractorId = cursor.getLong(cursor.getColumnIndexOrThrow(DatabaseHelper.COLUMN_CONTRACTOR_ID)),
-                                organizationName = organizationName,
-                                legalAddress = legalAddress,
-                                actualAddress = actualAddress,
-                                postalAddress = postalAddress,
-                                inn = inn,
-                                kpp = kpp,
-                                ogrn = ogrn,
-                                accountNumber = accountNumber,
-                                correspondentAccount = correspondentAccount,
-                                bic = bic,
-                                bankName = bankName,
-                                phone = phone,
-                                email = email,
-                                director = director,
-                                authority = authority,
-                                fullName = fullName,
-                                addressesMatch = addressesMatch
-                            )
-                        } else {
-                            // Создаем новую запись
-                            dbHelper.saveContractorDetails(
-                                userId = userId,
-                                organizationName = organizationName,
-                                legalAddress = legalAddress,
-                                actualAddress = actualAddress,
-                                postalAddress = postalAddress,
-                                inn = inn,
-                                kpp = kpp,
-                                ogrn = ogrn,
-                                accountNumber = accountNumber,
-                                correspondentAccount = correspondentAccount,
-                                bic = bic,
-                                bankName = bankName,
-                                phone = phone,
-                                email = email,
-                                director = director,
-                                authority = authority,
-                                fullName = fullName,
-                                addressesMatch = addressesMatch
-                            )
-                        }
-                        cursor.close()
+                        try {
+                            // Проверяем, есть ли уже запись для этого пользователя
+                            val cursor = dbHelper.getContractorDetails(userId)
 
-                        isEditingEnabled = false
-                        showSuccessMessage = true
+                            if (cursor != null && cursor.moveToFirst()) {
+                                // Обновляем существующую запись
+                                val contractorId = cursor.getLong(cursor.getColumnIndexOrThrow(DatabaseHelper.COLUMN_CONTRACTOR_ID))
+                                val result = dbHelper.updateContractorDetails(
+                                    contractorId = contractorId,
+                                    organizationName = organizationName,
+                                    legalAddress = legalAddress,
+                                    actualAddress = actualAddress,
+                                    postalAddress = postalAddress,
+                                    inn = inn,
+                                    kpp = kpp,
+                                    ogrn = ogrn,
+                                    accountNumber = accountNumber,
+                                    correspondentAccount = correspondentAccount,
+                                    bic = bic,
+                                    bankName = bankName,
+                                    phone = phone,
+                                    email = email,
+                                    director = director,
+                                    authority = authority,
+                                    fullName = fullName,
+                                    addressesMatch = addressesMatch
+                                )
+
+                                if (result > 0) {
+                                    showSuccessMessage = true
+                                    isEditingEnabled = false
+                                } else {
+                                    // Обработка ошибки обновления
+                                    // Можно показать Toast или другое уведомление
+                                }
+                            } else {
+                                // Создаем новую запись
+                                val newContractorId = dbHelper.saveContractorDetails(
+                                    userId = userId,
+                                    organizationName = organizationName,
+                                    legalAddress = legalAddress,
+                                    actualAddress = actualAddress,
+                                    postalAddress = postalAddress,
+                                    inn = inn,
+                                    kpp = kpp,
+                                    ogrn = ogrn,
+                                    accountNumber = accountNumber,
+                                    correspondentAccount = correspondentAccount,
+                                    bic = bic,
+                                    bankName = bankName,
+                                    phone = phone,
+                                    email = email,
+                                    director = director,
+                                    authority = authority,
+                                    fullName = fullName,
+                                    addressesMatch = addressesMatch
+                                )
+
+                                if (newContractorId != -1L) {
+                                    showSuccessMessage = true
+                                    isEditingEnabled = false
+                                } else {
+                                    // Обработка ошибки сохранения
+                                    // Можно показать Toast или другое уведомление
+                                }
+                            }
+
+                            cursor?.close()
+                        } catch (e: Exception) {
+                            e.printStackTrace()
+                            // Обработка исключения при работе с БД
+                        }
                     },
                     modifier = Modifier
                         .weight(1f)
