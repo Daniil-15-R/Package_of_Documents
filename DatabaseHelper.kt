@@ -224,8 +224,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         // Вставка ролей
         db.execSQL("INSERT INTO $TABLE_ROLES ($COLUMN_ROLE_NAME, $COLUMN_DESCRIPTION) VALUES ('Client', 'Клиент - может заполнять и сохранять договоры')")
         db.execSQL("INSERT INTO $TABLE_ROLES ($COLUMN_ROLE_NAME, $COLUMN_DESCRIPTION) VALUES ('Lawyer', 'Юрист - может создавать шаблоны и управлять клиентами')")
-
-        // Хэши для тестовых паролей (SHA-256)
+        
         val lawyerPasswordHash = "5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8" // "password"
         val clientPasswordHash = "ef92b778bafe771e89245b89ecbc08a44a4e166c06659911881f383d4473e94f" // "password123"
 
@@ -244,7 +243,6 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
             )
         """.trimIndent())
 
-        // Вставка тестового пользователя (клиента)
         db.execSQL("""
             INSERT INTO $TABLE_USERS (
                 $COLUMN_USERNAME, $COLUMN_PASSWORD_HASH, $COLUMN_EMAIL,
@@ -615,7 +613,6 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         )
     }
 
-    // Удаление приложения
     fun deleteApplication(applicationId: Long): Int {
         val db = this.writableDatabase
         return db.delete(
