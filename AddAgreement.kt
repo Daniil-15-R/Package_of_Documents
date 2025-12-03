@@ -55,6 +55,7 @@ fun AddAgreement(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
+    var showConfirmationDialog by remember { mutableStateOf(false) }
     // States for all fields
     var agreementNumber by remember { mutableStateOf(AddAgreementData.agreementNumber) }
     var agreementDate by remember { mutableStateOf(AddAgreementData.agreementDate) }
@@ -684,33 +685,13 @@ fun AddAgreement(
                 onClick = {
                     // Проверяем заполнение обязательных полей
                     if (agreementNumber.isBlank() || agreementDate.isBlank() ||
-                        contractNumber.isBlank() || contractDate.isBlank() /*||
-                        agreementItems.isEmpty() || agreementItems.any { it.isBlank() } ||
-                        customerName.isBlank() || executorName.isBlank()*/) {
+                        contractNumber.isBlank() || contractDate.isBlank()) {
 
                         showErrorMessage = true
                         showSuccessMessage = false
                     } else {
                         saveData() // Сохраняем данные в объект AddAgreementData
-
-                        scope.launch {
-                            try {
-                                saveAgreementToDatabase(scope)
-                                // После успешного сохранения переходим к акту
-                                navController.navigate("acts/$customerType") {
-                                    // Очищаем стек навигации до корня, чтобы предотвратить возврат
-                                    popUpTo(navController.graph.startDestinationId) {
-                                        saveState = true
-                                    }
-                                    // Очищаем состояние, чтобы при возврате форма была чистой
-                                    launchSingleTop = true
-                                    restoreState = true
-                                }
-                            } catch (e: Exception) {
-                                showErrorMessage = true
-                                showSuccessMessage = false
-                            }
-                        }
+                        showConfirmationDialog = true // Показываем диалог вместо прямого перехода
                     }
                 },
                 modifier = Modifier
@@ -723,6 +704,54 @@ fun AddAgreement(
                 )
             ) {
                 Text("Перейти к акту", color = textColor)
+            }
+
+// Добавляем диалог подтверждения
+            if (showConfirmationDialog) {
+                AlertDialog(
+                    onDismissRequest = { showConfirmationDialog = false },
+                    title = { Text("Подтверждение") },
+                    text = { Text("Вы уже готовы закрыть документ?") },
+                    confirmButton = {
+                        Button(
+                            onClick = {
+                                showConfirmationDialog = false
+                                scope.launch {
+                                    try {
+                                        saveAgreementToDatabase(scope)
+                                        navController.navigate("acts/$customerType") {
+                                            popUpTo(navController.graph.startDestinationId) {
+                                                saveState = true
+                                            }
+                                            launchSingleTop = true
+                                            restoreState = true
+                                        }
+                                    } catch (e: Exception) {
+                                        showErrorMessage = true
+                                        showSuccessMessage = false
+                                    }
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = borderColor,
+                                contentColor = Color.White
+                            )
+                        ) {
+                            Text("Да")
+                        }
+                    },
+                    dismissButton = {
+                        Button(
+                            onClick = { showConfirmationDialog = false },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color.LightGray,
+                                contentColor = Color.Black
+                            )
+                        ) {
+                            Text("Нет")
+                        }
+                    }
+                )
             }
         }
     }
